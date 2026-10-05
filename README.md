@@ -45,10 +45,10 @@ Do envio pela Lambda até a decisão chegar pelo SNS:
 
 | Payload | POST → 202 | Total (decisão na fila) |
 |---|---|---|
-| 15 MB | 1,3 s | 2,6 s |
-| 22 MB | 1,1 s | 2,8 s |
-| **29 MB** | **1,3 s** | **3,1 s** |
-| 32 MB | 1,4 s | 2,7 s |
+| 15 MB | 0,9 s | 2,6 s |
+| 22 MB | 1,0 s | 2,7 s |
+| **29 MB** | **1,2 s** | **2,9 s** |
+| 32 MB | 1,4 s | 2,8 s |
 
 O JSON de teste é sintético, mas realista (~180 mil registros de histórico em 29 MB). Acima de
 64 MiB a App responde 413.

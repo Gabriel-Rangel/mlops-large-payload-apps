@@ -46,6 +46,10 @@ from model.features import make_synthetic_training_frame  # noqa: E402
 from model.pyfunc_model import LargePayloadScorer, model_signature  # noqa: E402
 
 mlflow.set_registry_uri("databricks-uc")
+# O MLflow não cria pastas intermediárias: garante a pasta do experimento (ex.: /Shared/<bundle>).
+from databricks.sdk import WorkspaceClient  # noqa: E402
+
+WorkspaceClient().workspace.mkdirs(str(Path(experiment_path).parent))
 mlflow.set_experiment(experiment_path)
 print("Modelo:", full_model_name, "| Experimento:", experiment_path)
 
