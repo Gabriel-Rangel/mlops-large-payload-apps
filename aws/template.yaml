@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Exemplo AWS da proposta com Databricks App: bucket de payloads (registrado como Volume EXTERNAL
+  no Unity Catalog), perna de resposta S3 (response_dbx.json) → SNS → fila "inbox" (no lugar do
+  response router / polling do Credit Engine) e uma Lambda que simula o Credit Engine.
+  Em produção, use o bucket e o response router existentes e só adicione a notificação S3 → SNS.
+
+Parameters:
+  Prefix:
+    Type: String
+    Default: lp-apps
+    Description: Prefixo dos nomes dos recursos
+  DatabricksSecretId:
+    Type: String
+    Default: mlops-large-payload-apps/databricks-client
+    Description: Secret do Secrets Manager com o OAuth do service principal (scripts/setup_identities.py)
+  S3Prefix:
+    Type: String
+    Default: payloads/
+    Description: Prefixo do bucket usado pelo Volume EXTERNAL
+
+Resources:
+  DecisionsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${Prefix}-decisions
+
+  DecisionsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref DecisionsTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PermiteNotificacoesDoBucket
+            Effect: Allow
+            Principal: { Service: s3.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref DecisionsTopic
+            Condition:
+              ArnLike: { "aws:SourceArn": !Sub "arn:aws:s3:::${Prefix}-payloads-${AWS::AccountId}" }
+              StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId }
+
+  # O bucket dispara o SNS quando a App grava response_dbx.json (no Volume EXTERNAL = neste bucket).
+  PayloadBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: DecisionsTopicPolicy
+    Properties:
+      BucketName: !Sub ${Prefix}-payloads-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:  # retenção do exemplo; defina a política real com risco/compliance
+        Rules:
+          - Id: expira-payloads-de-teste
+            Status: Enabled
+            Prefix: !Ref S3Prefix
+            ExpirationInDays: 30
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Topic: !Ref DecisionsTopic
+            Filter:
+              S3Key:
+                Rules:
+                  - { Name: prefix, Value: !Ref S3Prefix }
+                  - { Name: suffix, Value: response_dbx.json }
+
+  # Fila assinada no SNS: faz o papel do response router / polling do Credit Engine no teste.
+  CreditEngineInbox:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Prefix}-credit-engine-inbox
+      MessageRetentionPeriod: 3600
+      VisibilityTimeout: 30
+
+  CreditEngineInboxPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref CreditEngineInbox]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: sns.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt CreditEngineInbox.Arn
+            Condition:
+              ArnEquals: { "aws:SourceArn": !Ref DecisionsTopic }
+
+  InboxSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      TopicArn: !Ref DecisionsTopic
+      Endpoint: !GetAtt CreditEngineInbox.Arn
+      RawMessageDelivery: true  # a mensagem é o próprio evento S3
+
+  SimulatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}-credit-engine-sim-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: credit-engine-sim
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${DatabricksSecretId}-*"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${Prefix}-payloads-${AWS::AccountId}/${S3Prefix}*"
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt CreditEngineInbox.Arn
+
+  SimulatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${Prefix}-credit-engine-sim
+      Description: Simula o Credit Engine — POST de 15–32 MB na App e espera a decisão pelo SNS
+      Runtime: python3.12
+      Handler: credit_engine_sim.handler
+      Code: ../build/lambda/credit_engine_sim
+      MemorySize: 2048
+      Timeout: 300
+      Role: !GetAtt SimulatorRole.Arn
+      Environment:
+        Variables:
+          BUCKET: !Ref PayloadBucket
+          INBOX_URL: !Ref CreditEngineInbox
+          DATABRICKS_SECRET_ID: !Ref DatabricksSecretId
+
+Outputs:
+  BucketName:
+    Value: !Ref PayloadBucket
+  TopicArn:
+    Value: !Ref DecisionsTopic
+  InboxUrl:
+    Value: !Ref CreditEngineInbox
+  SimulatorFunctionName:
+    Value: !Ref SimulatorFunction

@@ -1,0 +1,44 @@
+# Databricks App que recebe o request completo do Credit Engine.
+resources:
+  apps:
+    large_payload_app:
+      name: ${var.app_name}
+      description: Recebe 15 variáveis + JSON do birô (até 64 MiB), responde 202 e pontua o @Champion.
+      source_code_path: ../app
+      compute_size: MEDIUM  # 6 GB de memória: folga para o corpo de 29 MB e o JSON em memória
+      config:
+        command: ["python", "app.py"]
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: DATABRICKS_CATALOG
+            value: ${var.catalog}
+          - name: DATABRICKS_SCHEMA
+            value: ${resources.schemas.project.name}
+          - name: PAYLOAD_VOLUME
+            value: ${var.payload_volume}
+          - name: MODEL_URI
+            value: models:/${var.catalog}.${resources.schemas.project.name}.${var.model_name}@Champion
+          - name: OBSERVABILITY_TABLE
+            value: ${var.catalog}.${resources.schemas.project.name}.inference_observability
+          - name: APP_NAME
+            value: ${var.app_name}
+          - name: MAX_BODY_BYTES
+            value: "67108864"  # 64 MiB
+      # Permissões concedidas ao service principal da App (criado automaticamente).
+      # O modelo (EXECUTE) e a tabela de observabilidade (MODIFY) são criados por jobs, depois do
+      # primeiro deploy; por isso esses grants ficam no notebook 03_evaluate_promote.
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: payload-volume
+          uc_securable:
+            securable_type: VOLUME
+            securable_full_name: ${resources.volumes.payloads.catalog_name}.${resources.volumes.payloads.schema_name}.${resources.volumes.payloads.name}
+            permission: WRITE_VOLUME
+      # Quem pode chamar a App: o service principal do Credit Engine.
+      permissions:
+        - level: CAN_USE
+          service_principal_name: ${var.client_sp_app_id}

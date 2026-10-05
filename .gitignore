@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Databricks (estado local do bundle) e segredos
+.databricks/
+.env
+*.token
+*.pem
+
+# Artefatos locais (build das Lambdas, resultados dos testes ponta a ponta, MLflow local)
+build/
+mlruns/
+mlflow.db
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store

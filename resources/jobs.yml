@@ -1,0 +1,97 @@
+# Jobs do ciclo de vida (serverless). Ordem: setup_uc → train_register → evaluate_promote → validate_app.
+resources:
+  jobs:
+    setup_uc:
+      name: "[${bundle.target}] large-payload-apps · 01 setup Unity Catalog"
+      tasks:
+        - task_key: setup_uc
+          notebook_task:
+            notebook_path: ../src/notebooks/01_setup_uc.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.project.name}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+    train_register:
+      name: "[${bundle.target}] large-payload-apps · 02 treino + registro (@Challenger)"
+      tasks:
+        - task_key: train_register
+          notebook_task:
+            notebook_path: ../src/notebooks/02_train_register.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.project.name}
+              model_name: ${var.model_name}
+              experiment_path: ${var.experiment_path}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - scikit-learn==1.6.1  # mesma versão fixada em app/requirements.txt
+              - mlflow>=2.14.0
+              - pandas>=2.0.0
+              - databricks-sdk>=0.40.0
+
+    evaluate_promote:
+      name: "[${bundle.target}] large-payload-apps · 03 gates + promoção (@Champion)"
+      parameters:
+        - name: min_roc_auc
+          default: "0.70"
+        - name: promote_to_champion
+          default: "false"
+      tasks:
+        - task_key: evaluate_promote
+          notebook_task:
+            notebook_path: ../src/notebooks/03_evaluate_promote.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.project.name}
+              model_name: ${var.model_name}
+              payload_volume: ${var.payload_volume}
+              app_name: ${var.app_name}
+              min_roc_auc: "{{job.parameters.min_roc_auc}}"
+              promote_to_champion: "{{job.parameters.promote_to_champion}}"
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - scikit-learn==1.6.1
+              - mlflow>=2.14.0
+              - pandas>=2.0.0
+              - databricks-sdk>=0.40.0
+
+    validate_app:
+      name: "[${bundle.target}] large-payload-apps · 04 validação da App (até 32 MB)"
+      timeout_seconds: 3600
+      tasks:
+        - task_key: validate_app
+          notebook_task:
+            notebook_path: ../src/notebooks/04_validate_app.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.project.name}
+              app_name: ${var.app_name}
+              secret_scope: ${var.secret_scope}
+              payload_sizes_mb: "0.01,15,22,29,32"
+              oversize_mb: "65"
+              slo_ms: "60000"
+          environment_key: default
+          # O serverless repete tasks que falham (max_retries: 0 é descartado por ser zero);
+          # uma repetição que passa esconderia um check que falhou.
+          disable_auto_optimization: true
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - databricks-sdk>=0.40.0
+              - requests>=2.31.0
+              - pandas>=2.0.0
